@@ -1,5 +1,7 @@
 #include "MySerial.h"
+#include "ICM20948_Driver.h"
 
+extern ICM20948_Driver imu; // Refernce to the IMU driver instance defined in main.cpp
 extern double w1, w1_ref, MOT1_cmd; // Reference and command for the motor 1 - defined in MySetup.h
 extern double w2, w2_ref, MOT2_cmd; // Reference and command for the motor 2 - defined in MySetup.h
 extern double w3, w3_ref, MOT3_cmd; // Reference and command for the motor 1 - defined in MySetup.h
@@ -15,8 +17,7 @@ bool receiving = false;
 void SerialBegin() // Function to initialize the serial communication
 {
     Serial.begin(115200);
-    while (!Serial)
-        ;
+    while (!Serial);
 }
 
 void SerialDataPrint() // Function to print the data to the Serial Monitor
@@ -32,6 +33,15 @@ void SerialDataPrint() // Function to print the data to the Serial Monitor
         Serial.print(w3);
         Serial.print("\t");
         Serial.print(w4);
+
+        // imu data
+        Serial.print("\t");
+        Serial.print(imu.getPitch(), 2);  // Pitch angle in degrees
+        Serial.print("\t");
+        Serial.print(imu.getRoll(), 2);   // Roll angle in degrees
+        Serial.print("\t");
+        Serial.print(imu.getGyroZ(), 2);  // Yaw angular velocity (deg/s)
+        
         Serial.println('>');
     }
 }

@@ -1,10 +1,13 @@
 #include <Arduino.h> // Arduino library for basic functions
 
+#include "ICM20948_Driver.h" // Library for the IMU
 #include "MySetup.h"      // Pin and variable definitions
 #include "MyEncoder.h"    // Library for the encoder
 #include "MyMotor.h"      // Library for the motor
 #include "MyController.h" // Library for the controller
 #include "MySerial.h"     // Library for the controller
+
+ICM20948_Driver imu(0x68); // Create an instance of the ICM20948_Driver class with the default I2C address
 
 Encoder encoder1(ENC1_A, ENC1_B);                // Create an instance of the Encoder class
 Encoder encoder2(ENC2_A, ENC2_B);                // Create an instance of the Encoder class
@@ -24,6 +27,16 @@ Controller controller4(&w4, &MOT4_cmd, &w4_ref); // Create an instance of the Co
 //==============================================
 void setup()
 {
+  // imu setup
+  if (!imu.begin(Wire, 21, 22, 400000)) {
+    Serial.println("IMU init failed");
+    while (1) delay(100);
+  }
+
+  Serial.println("IMU calibrating, hold still...");
+  imu.calibrateGyro(500);
+  Serial.println("IMU calibrated");
+
   encoder1.begin();    // Initialize the encoder
   encoder2.begin();    // Initialize the encoder
   encoder3.begin();    // Initialize the encoder
@@ -41,6 +54,7 @@ void setup()
 
 void loop()
 {
+  imu.update();                       // Update the IMU readings
   EncoderTick1 = encoder1.getCount(); // Get the encoder count
   EncoderTick2 = encoder2.getCount(); // Get the encoder count
   EncoderTick3 = encoder3.getCount(); // Get the encoder count
