@@ -1,179 +1,185 @@
 #include "ICM20948_Driver.h"
+#include <math.h>
 
-ICM20948_Driver::ICM20948_Driver(uint8_t i2cAddress) : addr(i2cAddress) {}
+// Register definitions
+#define REG_BANK_SEL        0x7F
+#define REG_WHO_AM_I        0x00
+#define REG_PWR_MGMT_1      0x06
+#define REG_PWR_MGMT_2      0x07
+#define REG_ACCEL_XOUT_H    0x2D
+#define REG_GYRO_XOUT_H     0x33
 
-bool ICM20948_Driver::begin(TwoWire &wirePort, int sdaPin, int sclPin, uint32_t clockSpeed) {
-    i2c = &wirePort;
-    i2c->begin(sdaPin, sclPin);
-    i2c->setClock(clockSpeed);
+ICM20948_Driver::ICM20948_Driver(uint8_t address) : _addr(address), _i2cTimeoutMs(100) {}
 
-    // Verify Chip ID (Bank 0, REG_WHO_AM_I should be 0xEA)
-    uint8_t chipID = readRegister(0, REG_WHO_AM_I);
-    if (chipID != 0xEA) {
+bool ICM20948_Driver::selectBank(uint8_t bank) {
+    Wire.beginTransmission(_addr);
+    Wire.write(REG_BANK_SEL);
+    Wire.write((bank & 0x03) << 4);
+    return (Wire.endTransmission() == 0);
+}
+
+bool ICM20948_Driver::writeRegister(uint8_t reg, uint8_t value) {
+    Wire.beginTransmission(_addr);
+    Wire.write(reg);
+    Wire.write(value);
+    return (Wire.endTransmission() == 0);
+}
+
+bool ICM20948_Driver::readRegister(uint8_t reg, uint8_t *value) {
+    Wire.beginTransmission(_addr);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return false;
+
+    if (Wire.requestFrom(_addr, (uint8_t)1) == 1) {
+        *value = Wire.read();
+        return true;
+    }
+    return false;
+}
+
+bool ICM20948_Driver::readBytes(uint8_t reg, uint8_t *buffer, size_t length) {
+    Wire.beginTransmission(_addr);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return false;
+
+    size_t received = Wire.requestFrom(_addr, (uint8_t)length);
+    if (received < length) return false;
+
+    for (size_t i = 0; i < length; i++) {
+        buffer[i] = Wire.read();
+    }
+    return true;
+}
+
+bool ICM20948_Driver::begin(int sdaPin, int sclPin, uint32_t clockSpeed) {
+    // 1. Initialize Wire bus
+    Wire.begin(sdaPin, sclPin, clockSpeed);
+    Wire.setTimeOut(_i2cTimeoutMs); // Critical timeout guard
+
+    // 2. Switch to User Bank 0
+    if (!selectBank(0)) return false;
+
+    // 3. Verify WHO_AM_I signature (0xEA)
+    uint8_t id = 0;
+    if (!readRegister(REG_WHO_AM_I, &id) || id != 0xEA) {
         return false;
     }
 
-    // Wake up chip & set auto-select clock source
-    writeRegister(0, REG_PWR_MGMT_1, 0x01);
+    // 4. Wake up device (Clear SLEEP bit)
+    if (!writeRegister(REG_PWR_MGMT_1, 0x01)) return false; // Auto select clock
     delay(10);
+    if (!writeRegister(REG_PWR_MGMT_2, 0x00)) return false; // Enable Accel & Gyro
 
-    // Enable Gyroscope and Accelerometer
-    writeRegister(0, REG_PWR_MGMT_2, 0x00);
-
-    // Bank 2 Config: Enable Gyro DLPF (~24Hz Cutoff) & Set ±2000 dps
-    writeRegister(2, REG_GYRO_CONFIG_1, (0x03 << 3) | (0x03 << 1) | 0x01);
-
-    // Bank 2 Config: Enable Accel DLPF (~24Hz Cutoff) & Set ±2g
-    writeRegister(2, REG_ACCEL_CONFIG, (0x03 << 3) | (0x00 << 1) | 0x01);
-
-    // Return to Bank 0 for continuous reading
-    writeRegister(0, REG_BANK_SEL, 0x00);
-
-    lastMicro = micros();
+    lastUpdateUs = micros();
     return true;
 }
 
-void ICM20948_Driver::setKalmanTuning(float Q_angle, float Q_bias, float R_measure) {
-    kalmanPitch.Q_angle = Q_angle;
-    kalmanPitch.Q_bias = Q_bias;
-    kalmanPitch.R_measure = R_measure;
+bool ICM20948_Driver::calibrateGyro(uint16_t samples) {
+    float sumGx = 0.0f, sumGy = 0.0f, sumGz = 0.0f;
+    uint16_t validSamples = 0;
+    unsigned long startTime = millis();
 
-    kalmanRoll.Q_angle = Q_angle;
-    kalmanRoll.Q_bias = Q_bias;
-    kalmanRoll.R_measure = R_measure;
-}
+    // Prevent infinite loop if I2C glitches during calibration (max 3 sec runtime)
+    while (validSamples < samples && (millis() - startTime < 3000)) {
+        if (!selectBank(0)) continue;
 
-void ICM20948_Driver::calibrateGyro(int samples) {
-    long sumX = 0, sumY = 0, sumZ = 0;
-    uint8_t rawData[6];
+        uint8_t buf[6];
+        if (readBytes(REG_GYRO_XOUT_H, buf, 6)) {
+            int16_t rawGx = (int16_t)((buf[0] << 8) | buf[1]);
+            int16_t rawGy = (int16_t)((buf[2] << 8) | buf[3]);
+            int16_t rawGz = (int16_t)((buf[4] << 8) | buf[5]);
 
-    for (int i = 0; i < samples; i++) {
-        readRegisters(0, REG_GYRO_XOUT_H, rawData, 6);
-        sumX += (int16_t)((rawData[0] << 8) | rawData[1]);
-        sumY += (int16_t)((rawData[2] << 8) | rawData[3]);
-        sumZ += (int16_t)((rawData[4] << 8) | rawData[5]);
-        delay(3);
+            // Full scale range sensitivity factor for +/- 250 dps (131.0 LSB/dps)
+            sumGx += (rawGx / 131.0f);
+            sumGy += (rawGy / 131.0f);
+            sumGz += (rawGz / 131.0f);
+            validSamples++;
+        }
+        delay(2);
     }
 
-    gyroBiasX = ((float)sumX / samples) / GYRO_SENSITIVITY;
-    gyroBiasY = ((float)sumY / samples) / GYRO_SENSITIVITY;
-    gyroBiasZ = ((float)sumZ / samples) / GYRO_SENSITIVITY;
-}
+    if (validSamples == 0) return false;
 
-// 2-State Kalman Filter Calculation
-float ICM20948_Driver::computeKalman(KalmanState &k, float newAngle, float newRate, float dt) {
-    // 1. Predict state angle and error covariance
-    float rate = newRate - k.bias;
-    k.angle += dt * rate;
-
-    k.P[0][0] += dt * (dt * k.P[1][1] - k.P[0][1] - k.P[1][0] + k.Q_angle);
-    k.P[0][1] -= dt * k.P[1][1];
-    k.P[1][0] -= dt * k.P[1][1];
-    k.P[1][1] += k.Q_bias * dt;
-
-    // 2. Innovation covariance (S)
-    float S = k.P[0][0] + k.R_measure;
-
-    // 3. Kalman gain (K)
-    float K[2];
-    K[0] = k.P[0][0] / S;
-    K[1] = k.P[1][0] / S;
-
-    // 4. Residual / Error
-    float y = newAngle - k.angle;
-
-    // 5. Update state
-    k.angle += K[0] * y;
-    k.bias  += K[1] * y;
-
-    // 6. Update error covariance
-    float P00_temp = k.P[0][0];
-    float P01_temp = k.P[0][1];
-
-    k.P[0][0] -= K[0] * P00_temp;
-    k.P[0][1] -= K[0] * P01_temp;
-    k.P[1][0] -= K[1] * P00_temp;
-    k.P[1][1] -= K[1] * P01_temp;
-
-    return k.angle;
-}
-
-bool ICM20948_Driver::update() {
-    uint8_t rawBuffer[12]; // Accel (6) + Gyro (6)
-    readRegisters(0, REG_ACCEL_XOUT_H, rawBuffer, 12);
-
-    unsigned long currentMicro = micros();
-    float dt = (currentMicro - lastMicro) / 1000000.0f;
-    lastMicro = currentMicro;
-
-    if (dt <= 0.0f || dt > 0.5f) return false;
-
-    // Convert raw 16-bit signed integers
-    int16_t rawAX = (rawBuffer[0] << 8) | rawBuffer[1];
-    int16_t rawAY = (rawBuffer[2] << 8) | rawBuffer[3];
-    int16_t rawAZ = (rawBuffer[4] << 8) | rawBuffer[5];
-
-    int16_t rawGX = (rawBuffer[6] << 8) | rawBuffer[7];
-    int16_t rawGY = (rawBuffer[8] << 8) | rawBuffer[9];
-    int16_t rawGZ = (rawBuffer[10] << 8) | rawBuffer[11];
-
-    // Convert raw values to physical units and subtract static bias
-    ax = rawAX / ACCEL_SENSITIVITY;
-    ay = rawAY / ACCEL_SENSITIVITY;
-    az = rawAZ / ACCEL_SENSITIVITY;
-
-    gx = (rawGX / GYRO_SENSITIVITY) - gyroBiasX;
-    gy = (rawGY / GYRO_SENSITIVITY) - gyroBiasY;
-    gz = (rawGZ / GYRO_SENSITIVITY) - gyroBiasZ;
-
-    // Accelerometer static orientation reference
-    float accelPitch = atan2(-ax, sqrt(ay * ay + az * az)) * (180.0f / PI);
-    float accelRoll  = atan2(ay, az) * (180.0f / PI);
-
-    // Run Kalman Predict & Update steps for Pitch and Roll
-    pitch = computeKalman(kalmanPitch, accelPitch, gx, dt);
-    roll  = computeKalman(kalmanRoll, accelRoll, gy, dt);
-
+    gx_bias = sumGx / validSamples;
+    gy_bias = sumGy / validSamples;
+    gz_bias = sumGz / validSamples;
     return true;
 }
 
-// Low-Level Bus Helpers
-void ICM20948_Driver::writeRegister(uint8_t bank, uint8_t reg, uint8_t val) {
-    i2c->beginTransmission(addr);
-    i2c->write(REG_BANK_SEL);
-    i2c->write(bank << 4);
-    i2c->endTransmission();
+void ICM20948_Driver::update() {
+    unsigned long nowUs = micros();
+    float dt = (nowUs - lastUpdateUs) * 1e-6f;
+    lastUpdateUs = nowUs;
 
-    i2c->beginTransmission(addr);
-    i2c->write(reg);
-    i2c->write(val);
-    i2c->endTransmission();
-}
+    // Cap delta-T to prevent matrix explosion after pause or startup
+    if (dt <= 0.0f || dt > 0.1f) dt = 0.01f;
 
-uint8_t ICM20948_Driver::readRegister(uint8_t bank, uint8_t reg) {
-    i2c->beginTransmission(addr);
-    i2c->write(REG_BANK_SEL);
-    i2c->write(bank << 4);
-    i2c->endTransmission();
+    if (!selectBank(0)) return;
 
-    i2c->beginTransmission(addr);
-    i2c->write(reg);
-    i2c->requestFrom(addr, (uint8_t)1);
-    return i2c->available() ? i2c->read() : 0x00;
-}
+    // Read 12 contiguous bytes: Accel (6) + Gyro (6)
+    uint8_t rawData[12];
+    if (!readBytes(REG_ACCEL_XOUT_H, rawData, 12)) {
+        return; // Safely abort without changing states if I2C drops frames
+    }
 
-void ICM20948_Driver::readRegisters(uint8_t bank, uint8_t reg, uint8_t* buffer, uint8_t length) {
-    i2c->beginTransmission(addr);
-    i2c->write(REG_BANK_SEL);
-    i2c->write(bank << 4);
-    i2c->endTransmission();
+    // Parse Accelerometer (LSB to g force assuming default +/- 2g range = 16384 LSB/g)
+    int16_t rawAx = (int16_t)((rawData[0] << 8) | rawData[1]);
+    int16_t rawAy = (int16_t)((rawData[2] << 8) | rawData[3]);
+    int16_t rawAz = (int16_t)((rawData[4] << 8) | rawData[5]);
 
-    i2c->beginTransmission(addr);
-    i2c->write(reg);
-    i2c->endTransmission(false); // Repeated start
+    ax = rawAx / 16384.0f;
+    ay = rawAy / 16384.0f;
+    az = rawAz / 16384.0f;
 
-    i2c->requestFrom(addr, length);
-    for (uint8_t i = 0; i < length && i2c->available(); i++) {
-        buffer[i] = i2c->read();
+    // Parse Gyroscope (LSB to dps assuming default +/- 250 dps range = 131 LSB/dps)
+    int16_t rawGx = (int16_t)((rawData[6] << 8) | rawData[7]);
+    int16_t rawGy = (int16_t)((rawData[8] << 8) | rawData[9]);
+    int16_t rawGz = (int16_t)((rawData[10] << 8) | rawData[11]);
+
+    gx = (rawGx / 131.0f) - gx_bias;
+    gy = (rawGy / 131.0f) - gy_bias;
+    gz = (rawGz / 131.0f) - gz_bias;
+
+    // Prevent division by zero FPU crashes
+    float accelNorm = sqrtf(ax * ax + ay * ay + az * az);
+    if (accelNorm < 0.1f) return;
+
+    // -------------------------------------------------------------
+    // EXTENDED KALMAN FILTER (EKF) IMPLEMENTATION (2-State)
+    // -------------------------------------------------------------
+
+    // 1. PREDICT STEP
+    // Kinematic propagation using Gyro rates
+    pitch += gy * dt;
+    roll  += gx * dt;
+
+    // Propagate state covariance: P_k|k-1 = F * P_k-1|k-1 * F^T + Q
+    P[0][0] += dt * (dt * P[1][1] - P[0][1] - P[1][0] + Q_angle);
+    P[0][1] -= dt * P[1][1];
+    P[1][0] -= dt * P[1][1];
+    P[1][1] += Q_gyro * dt;
+
+    // 2. MEASURE STEP (Calculate Pitch/Roll directly from Accelerometer)
+    float pitch_acc = atan2f(-ax, sqrtf(ay * ay + az * az)) * RAD_TO_DEG;
+    float roll_acc  = atan2f(ay, az) * RAD_TO_DEG;
+
+    // 3. UPDATE STEP (Pitch State)
+    float y_pitch = pitch_acc - pitch;          // Innovation residual
+    float S_pitch = P[0][0] + R_angle;          // Innovation covariance
+    if (S_pitch > 1e-6f) {
+        float K_pitch[2] = { P[0][0] / S_pitch, P[1][0] / S_pitch }; // Kalman gain
+        pitch += K_pitch[0] * y_pitch;
+        P[0][0] -= K_pitch[0] * P[0][0];
+        P[0][1] -= K_pitch[0] * P[0][1];
+    }
+
+    // UPDATE STEP (Roll State)
+    float y_roll = roll_acc - roll;             // Innovation residual
+    float S_roll = P[1][1] + R_angle;           // Innovation covariance
+    if (S_roll > 1e-6f) {
+        float K_roll[2] = { P[0][1] / S_roll, P[1][1] / S_roll };   // Kalman gain
+        roll += K_roll[1] * y_roll;
+        P[1][0] -= K_roll[1] * P[1][0];
+        P[1][1] -= K_roll[1] * P[1][1];
     }
 }

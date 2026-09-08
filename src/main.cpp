@@ -28,9 +28,9 @@ Controller controller4(&w4, &MOT4_cmd, &w4_ref); // Create an instance of the Co
 void setup()
 {
   // imu setup
-  if (!imu.begin(Wire, 21, 22, 400000)) {
+  if (!imu.begin(IMU_SDA, IMU_SCL)) {
     Serial.println("IMU init failed");
-    while (1) delay(100);
+    while (1) delay(100); // watch loop waiting for IMU to be connected
   }
 
   Serial.println("IMU calibrating, hold still...");
@@ -54,7 +54,7 @@ void setup()
 
 void loop()
 {
-  imu.update();                       // Update the IMU readings
+  /* imu.update();                       // Update the IMU readings */
   EncoderTick1 = encoder1.getCount(); // Get the encoder count
   EncoderTick2 = encoder2.getCount(); // Get the encoder count
   EncoderTick3 = encoder3.getCount(); // Get the encoder count
@@ -69,8 +69,8 @@ void loop()
   controller4.compute();              // Compute the PID control output
   motor1.send_pwm(MOT1_cmd);          // Send the PWM command to the motor
   motor2.send_pwm(MOT2_cmd);          // Send the PWM command to the motor
-  motor3.send_pwm(MOT1_cmd);          // Send the PWM command to the motor
-  motor4.send_pwm(MOT2_cmd);          // Send the PWM command to the motor
+  motor3.send_pwm(MOT3_cmd);          // Send the PWM command to the motor
+  motor4.send_pwm(MOT4_cmd);          // Send the PWM command to the motor
   SerialDataPrint();                  // Print the data to the Serial Monitor
   SerialDataRead();                  // Write the data to the Serial Monitor
 }

@@ -14,6 +14,7 @@ extern volatile long EncoderTick3;    // Encoder tick count for encoder 3
 extern volatile long EncoderTick4;    // Encoder tick count for encoder 4
 extern unsigned long Serial_time;   // Time for serial communication - defined in MySetup.h
 String incomingMessage = "";
+std::vector<int> tabIndices;
 bool receiving = false;
 
 void SerialBegin() // Function to initialize the serial communication
@@ -42,7 +43,7 @@ void SerialDataPrint() // Function to print the data to the Serial Monitor
         Serial.print("\t");
         Serial.print(imu.getRoll(), 2);   // Roll angle in degrees
         Serial.print("\t");
-        Serial.print(imu.getGyroZ(), 2);  // Yaw angular velocity (deg/s)
+        Serial.print(imu.getGz(), 2);  // Yaw angular velocity (deg/s)
         
         Serial.println('>');
     }
@@ -74,7 +75,6 @@ void SerialDataRead()
 void parseCommand(const String &msg)
 {
    
-    std::vector<int> tabIndices;
     for (int i = 0; i < msg.length(); ++i) {
         if (msg[i] == '\t') {tabIndices.push_back(i);}
     }
@@ -82,10 +82,12 @@ void parseCommand(const String &msg)
     String w1_str = msg.substring(0, tabIndices[0] - 1);
     String w2_str = msg.substring(tabIndices[0], tabIndices[1] - 1);
     String w3_str = msg.substring(tabIndices[1], tabIndices[2] - 1);
-    String w4_str = msg.substring(tabIndices[2], tabIndices[3] - 1);
+    String w4_str = msg.substring(tabIndices[2], msg.length() - 1);
     w1_ref = w1_str.toFloat();
     w2_ref = w2_str.toFloat();
     w3_ref = w3_str.toFloat();
     w4_ref = w4_str.toFloat();
+
+    tabIndices.clear(); // clearing the tab counter for next message
 
 }
