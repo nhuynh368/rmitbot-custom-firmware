@@ -27,16 +27,6 @@ Controller controller4(&w4, &MOT4_cmd, &w4_ref); // Create an instance of the Co
 //==============================================
 void setup()
 {
-  // imu setup
-  if (!imu.begin(IMU_SDA, IMU_SCL)) {
-    Serial.println("IMU init failed");
-    while (1) delay(100); // watch loop waiting for IMU to be connected
-  }
-
-  Serial.println("IMU calibrating, hold still...");
-  imu.calibrateGyro(500);
-  Serial.println("IMU calibrated");
-
   encoder1.begin();    // Initialize the encoder
   encoder2.begin();    // Initialize the encoder
   encoder3.begin();    // Initialize the encoder
@@ -50,27 +40,41 @@ void setup()
   controller3.begin(); // Initialize the controller
   controller4.begin(); // Initialize the controller
   SerialBegin();       // Initialize the serial communication
+  // imu setup
+  if (!imu.begin(IMU_SDA, IMU_SCL)) {
+    Serial.println("IMU init failed");
+    while (1) delay(100); // watch loop waiting for IMU to be connected
+  }
+
+  Serial.println("IMU calibrating, hold still...");
+  imu.calibrateGyro(500);
+  Serial.println("IMU calibrated");
 }
 
 void loop()
 {
-  /* imu.update();                       // Update the IMU readings */
   EncoderTick1 = encoder1.getCount(); // Get the encoder count
   EncoderTick2 = encoder2.getCount(); // Get the encoder count
   EncoderTick3 = encoder3.getCount(); // Get the encoder count
   EncoderTick4 = encoder4.getCount(); // Get the encoder count
+  
   w1 = encoder1.getVelocity();        // Get the velocity from the encoder
   w2 = encoder2.getVelocity();        // Get the velocity from the encoder
   w3 = encoder3.getVelocity();        // Get the velocity from the encoder
   w4 = encoder4.getVelocity();        // Get the velocity from the encoder
+  
+  imu.update(w1,w2,w3,w4);                       // Update the IMU readings
+  
   controller1.compute();              // Compute the PID control output
   controller2.compute();              // Compute the PID control output
   controller3.compute();              // Compute the PID control output
   controller4.compute();              // Compute the PID control output
+  
   motor1.send_pwm(MOT1_cmd);          // Send the PWM command to the motor
   motor2.send_pwm(MOT2_cmd);          // Send the PWM command to the motor
   motor3.send_pwm(MOT3_cmd);          // Send the PWM command to the motor
   motor4.send_pwm(MOT4_cmd);          // Send the PWM command to the motor
+  
   SerialDataPrint();                  // Print the data to the Serial Monitor
   SerialDataRead();                  // Write the data to the Serial Monitor
 }
