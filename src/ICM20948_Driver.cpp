@@ -101,11 +101,6 @@ bool ICM20948_Driver::calibrateGyro(uint16_t samples) {
 }
 
 void ICM20948_Driver::update() {
-    // Pure dead reckoning fallback if encoders aren't provided
-    update(0.0, 0.0, 0.0, 0.0);
-}
-
-void ICM20948_Driver::update(double w1, double w2, double w3, double w4) {
     unsigned long nowUs = micros();
     float dt = (nowUs - lastUpdateUs) * 1e-6f;
     lastUpdateUs = nowUs;
@@ -114,10 +109,20 @@ void ICM20948_Driver::update(double w1, double w2, double w3, double w4) {
 
     if (!selectBank(0)) return;
 
+    // Read 12 bytes: Accel (6 bytes: X, Y, Z) + Gyro (6 bytes: X, Y, Z)
     uint8_t rawData[12];
     if (!readBytes(REG_ACCEL_XOUT_H, rawData, 12)) return;
 
-    // Parse Gyroscope (LSB to dps)
+    // Parse Accelerometer (Default ±2g scale factor: 16384 LSB/g)
+    int16_t rawAx = (int16_t)((rawData[0] << 8) | rawData[1]);
+    int16_t rawAy = (int16_t)((rawData[2] << 8) | rawData[3]);
+    int16_t rawAz = (int16_t)((rawData[4] << 8) | rawData[5]);
+
+    ax = rawAx / 16384.0f;
+    ay = rawAy / 16384.0f;
+    az = rawAz / 16384.0f;
+
+    // Parse Gyroscope (Default ±250 dps scale factor: 131 LSB/dps)
     int16_t rawGx = (int16_t)((rawData[6] << 8) | rawData[7]);
     int16_t rawGy = (int16_t)((rawData[8] << 8) | rawData[9]);
     int16_t rawGz = (int16_t)((rawData[10] << 8) | rawData[11]);
@@ -126,27 +131,12 @@ void ICM20948_Driver::update(double w1, double w2, double w3, double w4) {
     gy = (rawGy / 131.0f) - gy_bias;
     gz = (rawGz / 131.0f) - gz_bias;
 
-    // -------------------------------------------------------------
-    // KALMAN FILTER: YAW FUSION (Gyro Integration + Encoder Kinematics)
-    // -------------------------------------------------------------
+    // Pitch and Roll derived purely from Accelerometer
+    pitch = atan2f(-ax, sqrtf(ay * ay + az * az)) * RAD_TO_DEG;
+    roll  = atan2f(ay, az) * RAD_TO_DEG;
 
-    // 1. PREDICT: Integrate IMU Z-gyro rate
+    // Yaw calculated strictly via Z-axis Gyroscope integration
     yaw += gz * dt;
-    p_yaw += q_process * dt;
-
-    // 2. MEASURE: Derive rotational velocity (rad/s) from Mecanum kinematics
-    // Formula for Mecanum drive angular velocity around Z-axis:
-    float k_geom = _wheelRadius / (4.0f * (_lx + _ly));
-    float omega_enc_rad = k_geom * (-w1 + w2 - w3 + w4); 
-    float omega_enc_deg = omega_enc_rad * RAD_TO_DEG;
-
-    // Integrate incremental yaw measurement from wheel encoders
-    float yaw_meas = yaw + (omega_enc_deg * dt);
-
-    // 3. UPDATE: Kalman gain calculation and state update
-    float k_gain = p_yaw / (p_yaw + r_measure);
-    yaw += k_gain * (yaw_meas - yaw);
-    p_yaw *= (1.0f - k_gain);
 
     // Keep heading bounded within [-180, 180] degrees
     if (yaw > 180.0f) yaw -= 360.0f;

@@ -43,7 +43,7 @@ void SerialDataPrint() // Function to print the data to the Serial Monitor
         Serial.print("\t");
         Serial.print(imu.getRoll(), 2);   // Roll angle in degrees
         Serial.print("\t");
-        Serial.print(imu.getGz(), 2);  // Yaw angular velocity (deg/s)
+        Serial.print(imu.getYaw(), 2);  // Yaw angular velocity (deg/s)
         
         Serial.println('>');
     }

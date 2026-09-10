@@ -63,7 +63,7 @@ void loop()
   w3 = encoder3.getVelocity();        // Get the velocity from the encoder
   w4 = encoder4.getVelocity();        // Get the velocity from the encoder
   
-  imu.update(w1,w2,w3,w4);                       // Update the IMU readings
+  imu.update();                       // Update the IMU readings
   
   controller1.compute();              // Compute the PID control output
   controller2.compute();              // Compute the PID control output
